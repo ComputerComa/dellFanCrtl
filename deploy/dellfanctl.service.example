@@ -15,5 +15,12 @@ RestartSec=5
 # iDRAC before exiting; give it a little room to do so.
 TimeoutStopSec=15
 
+# systemd creates/owns /var/log/dellfanctl (root:root, mode 0750); the
+# service's own stdout/stderr is appended there instead of only going to
+# the journal. See deploy/dellfanctl.logrotate for rotating this file.
+LogsDirectory=dellfanctl
+StandardOutput=append:%L/dellfanctl/dellfanctl.log
+StandardError=append:%L/dellfanctl/dellfanctl.log
+
 [Install]
 WantedBy=multi-user.target

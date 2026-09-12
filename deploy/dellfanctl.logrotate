@@ -1,0 +1,12 @@
+# Rotation policy for the log file dellfanctl's systemd unit appends to
+# (see deploy/dellfanctl.service.example / `dellfanctl install-service`).
+# Install with: sudo cp deploy/dellfanctl.logrotate /etc/logrotate.d/dellfanctl
+/var/log/dellfanctl/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

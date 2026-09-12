@@ -80,8 +80,17 @@ func Save(path string, cfg *Config, overwrite bool) error {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 	out := append([]byte(configHeader), b...)
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	// 0600: the config can hold an mqtt.password, so it's root-only by
+	// default rather than world-readable. os.WriteFile only applies this
+	// mode when *creating* a new file, not when overwriting one that
+	// already existed (e.g. from an older version, or before mqtt
+	// support) with looser permissions, so Chmod explicitly rather than
+	// relying on that.
+	if err := os.WriteFile(path, out, 0o600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("setting config file permissions: %w", err)
 	}
 	return nil
 }
