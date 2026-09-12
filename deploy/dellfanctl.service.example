@@ -1,0 +1,19 @@
+# Example systemd unit for dellfanctl. `dellfanctl install-service` writes
+# a copy of this (with paths filled in) to /etc/systemd/system/. This file
+# is kept in the repo for reference and for manual installs.
+
+[Unit]
+Description=Dell iDRAC fan control (dellfanctl)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dellfanctl run --config /etc/dellfanctl/config.yaml
+Restart=on-failure
+RestartSec=5
+# SIGTERM triggers a graceful shutdown that hands fan control back to the
+# iDRAC before exiting; give it a little room to do so.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

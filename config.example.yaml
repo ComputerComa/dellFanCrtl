@@ -1,0 +1,122 @@
+# dellfanctl configuration example.
+#
+# In practice, don't hand-write this: run `dellfanctl discover` on the
+# target machine and it will generate a complete file shaped exactly like
+# this, populated with your actual sensors. This example exists to show the
+# shape of the file and explain each field; it is deliberately small.
+#
+# See README.md for the full explanation of how the control loop uses this.
+
+version: 1
+ipmitool_path: ipmitool
+smartctl_path: smartctl
+poll_interval: 5s
+
+# Raw ipmitool byte sequences for the Dell iDRAC OEM fan-control interface.
+# These defaults are the widely-documented commands that work on most
+# PowerEdge 11G-15G boards. If your fans don't respond to the "all zones"
+# 0xff broadcast, change zones to one byte per physical fan, e.g.
+# ["0x00","0x01","0x02","0x03","0x04","0x05"].
+dell:
+  manual_mode_cmd: ["0x30", "0x30", "0x01", "0x00"]
+  auto_mode_cmd: ["0x30", "0x30", "0x01", "0x01"]
+  set_speed_prefix: ["0x30", "0x30", "0x02"]
+  zones: ["0xff"]
+
+smoothing:
+  ema_alpha: 0.35            # 0-1: higher reacts faster, lower smooths harder
+  max_step_up_pct: 6         # max fan% increase per tick
+  max_step_down_pct: 3       # max fan% decrease per tick
+  min_change_pct: 1          # don't bother re-sending ipmitool for smaller changes
+  min_fan_pct: 12
+  max_fan_pct: 100
+  ramp_down_hold_ticks: 6    # ticks a lower speed must be requested before it's honored
+
+safety:
+  global_crit_c: 75              # fallback ceiling for sensors without their own crit_c
+  recover_hysteresis_c: 8        # degrees below crit_c required before resuming manual control
+  recover_good_ticks: 12         # consecutive good ticks required before resuming manual control
+  max_consecutive_errors: 5      # consecutive polling failures before falling back
+  revert_on_exit: true           # hand control back to iDRAC on shutdown/SIGTERM
+
+sensors:
+  - id: ipmi-cpu1-temp
+    name: CPU1 Temp
+    class: cpu
+    source: ipmi
+    ipmi_name: Temp     # exact name from `ipmitool sensor list`
+    occurrence: 1       # 1st sensor named "Temp" (some boards reuse names across CPUs)
+    required: true      # staleness trips the safety fallback
+    warn_c: 91
+    crit_c: 96
+
+  - id: ipmi-cpu2-temp
+    name: CPU2 Temp
+    class: cpu
+    source: ipmi
+    ipmi_name: Temp
+    occurrence: 2
+    required: true
+    warn_c: 91
+    crit_c: 96
+
+  - id: ipmi-fan1-rpm
+    name: Fan1 RPM
+    class: fan_rpm
+    source: ipmi
+    ipmi_name: Fan1 RPM
+    required: true
+    min_rpm: 3312       # below this, treated as a failed/failing fan
+
+  - id: smart-disk-1
+    name: "Disk 1 Temp (ST4000VN008-2DR166)"
+    class: disk
+    source: smart
+    device: /dev/bus/0        # smartctl device path
+    device_type: megaraid,1   # smartctl -d argument (behind a PERC/MegaRAID controller)
+    required: true
+    warn_c: 50
+    crit_c: 60
+
+  - id: smart-disk-2
+    name: "Disk 2 Temp (ST4000VN006-3CW104)"
+    class: disk
+    source: smart
+    device: /dev/bus/0
+    device_type: megaraid,2
+    required: true
+    warn_c: 50
+    crit_c: 60
+
+groups:
+  # Multiple CPU sensors are combined with "max": the hotter socket drives
+  # the fan curve.
+  - name: cpu
+    sensor_ids: [ipmi-cpu1-temp, ipmi-cpu2-temp]
+    aggregation: max
+    enabled: true
+    curve:
+      - {temp_c: 30, fan_pct: 20}
+      - {temp_c: 45, fan_pct: 30}
+      - {temp_c: 55, fan_pct: 45}
+      - {temp_c: 65, fan_pct: 65}
+      - {temp_c: 75, fan_pct: 90}
+      - {temp_c: 85, fan_pct: 100}
+
+  # Disks are logically grouped and averaged: one warm drive in an array of
+  # otherwise-cool drives shouldn't spike the fans the way one hot CPU
+  # should.
+  - name: disks
+    sensor_ids: [smart-disk-1, smart-disk-2]
+    aggregation: avg
+    enabled: true
+    curve:
+      - {temp_c: 25, fan_pct: 20}
+      - {temp_c: 35, fan_pct: 30}
+      - {temp_c: 40, fan_pct: 45}
+      - {temp_c: 45, fan_pct: 65}
+      - {temp_c: 50, fan_pct: 85}
+      - {temp_c: 55, fan_pct: 100}
+
+logging:
+  level: info
