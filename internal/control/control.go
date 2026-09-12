@@ -14,6 +14,7 @@ import (
 	"dellfanctl/internal/curve"
 	"dellfanctl/internal/ipmi"
 	"dellfanctl/internal/model"
+	"dellfanctl/internal/mqttpub"
 	"dellfanctl/internal/smart"
 )
 
@@ -29,9 +30,11 @@ type sensorState struct {
 
 // Controller runs the poll/compute/apply loop described in package docs.
 type Controller struct {
-	cfg    *model.Config
-	log    *slog.Logger
-	dryRun bool
+	cfg     *model.Config
+	log     *slog.Logger
+	dryRun  bool
+	mqttPub *mqttpub.Publisher
+	mqttWG  sync.WaitGroup
 
 	states map[string]*sensorState
 
@@ -62,6 +65,13 @@ func New(cfg *model.Config, log *slog.Logger, dryRun bool) *Controller {
 	}
 }
 
+// SetMQTT attaches an MQTT publisher that Run will announce discovery to
+// and Close on exit, and that every tick will publish a snapshot to. Call
+// before Run; passing nil (the default) simply disables MQTT publishing.
+func (c *Controller) SetMQTT(pub *mqttpub.Publisher) {
+	c.mqttPub = pub
+}
+
 // Run drives the control loop until ctx is canceled (SIGINT/SIGTERM should
 // cancel it upstream) or an unrecoverable error occurs. If once is true, it
 // performs exactly one tick and returns instead of looping. On exit it
@@ -76,6 +86,18 @@ func (c *Controller) Run(ctx context.Context, once bool) error {
 		return err
 	}
 	defer c.revertOnExit()
+
+	if c.mqttPub != nil {
+		c.mqttPub.PublishDiscovery(c.cfg)
+		defer func() {
+			// Let any in-flight publishAsync goroutine finish (each is
+			// itself bounded, see mqttpub.PublishSnapshot) before
+			// disconnecting, so shutdown can't cut off a publish that's
+			// still queued.
+			c.mqttWG.Wait()
+			c.mqttPub.Close()
+		}()
+	}
 
 	if once {
 		c.tick(ctx)
@@ -319,6 +341,94 @@ func (c *Controller) aggregate(g model.Group) (float64, bool) {
 	}
 }
 
+// isTempClass reports whether a sensor class reports a Celsius reading,
+// used both by the safety checks above and to compute the MQTT "overall
+// average temperature" summary.
+func isTempClass(c model.SensorClass) bool {
+	switch c {
+	case model.ClassCPU, model.ClassInlet, model.ClassExhaust, model.ClassBoard, model.ClassDisk, model.ClassMemory:
+		return true
+	}
+	return false
+}
+
+func (c *Controller) modeString() string {
+	if c.fallbackActive {
+		return "fallback"
+	}
+	return "manual"
+}
+
+// fanPctForPublish returns the last commanded fan percent, if known. It's
+// deliberately unknown (ok=false) whenever c.commandedPct is -1, which is
+// exactly the state fallback puts it in — so MQTT never reports a stale
+// manual fan percent while the iDRAC is actually the one driving the fans.
+func (c *Controller) fanPctForPublish() (float64, bool) {
+	if c.commandedPct < 0 {
+		return 0, false
+	}
+	return c.commandedPct, true
+}
+
+// buildSnapshot captures current sensor/group/fan state for MQTT
+// publishing. It only reads controller state (no I/O), so it's cheap to
+// call synchronously from tick() before handing the result to a goroutine
+// for the actual (network) publish.
+func (c *Controller) buildSnapshot() mqttpub.Snapshot {
+	snap := mqttpub.Snapshot{Time: time.Now(), Mode: c.modeString()}
+	if pct, ok := c.fanPctForPublish(); ok {
+		snap.FanPercent, snap.HasFanPercent = pct, true
+	}
+
+	var tempSum float64
+	var tempCount int
+	snap.Sensors = make([]mqttpub.SensorReading, 0, len(c.cfg.Sensors))
+	for _, s := range c.cfg.Sensors {
+		if s.Disabled {
+			continue
+		}
+		st := c.states[s.ID]
+		r := mqttpub.SensorReading{ID: s.ID, Stale: st.staleTicks > 0}
+		if st.emaInit {
+			r.Value, r.HasValue = st.ema, true
+			if isTempClass(s.Class) {
+				tempSum += st.ema
+				tempCount++
+			}
+		}
+		snap.Sensors = append(snap.Sensors, r)
+	}
+	if tempCount > 0 {
+		snap.AvgTemp, snap.HasAvgTemp = tempSum/float64(tempCount), true
+	}
+
+	snap.Groups = make([]mqttpub.GroupReading, 0, len(c.cfg.Groups))
+	for _, g := range c.cfg.Groups {
+		if !g.Enabled {
+			continue
+		}
+		agg, ok := c.aggregate(g)
+		snap.Groups = append(snap.Groups, mqttpub.GroupReading{Name: g.Name, Value: agg, HasValue: ok})
+	}
+	return snap
+}
+
+// publishAsync fires the MQTT snapshot publish in its own goroutine so a
+// slow or unreachable broker can never delay the next tick. It's tracked
+// via mqttWG so Run can wait for it to finish before disconnecting on
+// shutdown, instead of racing a still-in-flight publish.
+func (c *Controller) publishAsync() {
+	if c.mqttPub == nil {
+		return
+	}
+	snap := c.buildSnapshot()
+	c.mqttWG.Add(1)
+	go func() {
+		defer c.mqttWG.Done()
+		c.mqttPub.PublishSnapshot(snap)
+	}()
+}
+
 func clamp(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
@@ -332,6 +442,9 @@ func clamp(v, lo, hi float64) float64 {
 // tick runs one full poll/decide/apply cycle.
 func (c *Controller) tick(ctx context.Context) {
 	c.poll(ctx)
+	// Runs after every branch below, however it exits, so MQTT always gets
+	// a fresh snapshot reflecting whatever this tick actually decided.
+	defer c.publishAsync()
 
 	if reason := c.safetyTrip(); reason != "" {
 		if !c.fallbackActive {

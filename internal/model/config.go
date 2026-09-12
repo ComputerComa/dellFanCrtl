@@ -194,6 +194,33 @@ type Logging struct {
 	Level string `yaml:"level"` // debug, info, warn, error
 }
 
+// MQTT controls an optional, non-blocking MQTT publisher that mirrors every
+// sensor/group reading plus overall fan percent and average temperature to
+// an MQTT broker, with Home Assistant MQTT discovery so entities show up
+// automatically.
+type MQTT struct {
+	Enabled bool `yaml:"enabled"`
+	// Broker URL, e.g. "tcp://192.168.1.10:1883" or "ssl://host:8883".
+	Broker   string `yaml:"broker"`
+	ClientID string `yaml:"client_id"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// PasswordEnv, if set, reads the password from this environment
+	// variable instead of (or overriding) Password, so a secret needn't
+	// live in the config file on disk.
+	PasswordEnv string `yaml:"password_env,omitempty"`
+	// Topic prefix for all state/attribute topics, e.g. "dellfanctl/mynas".
+	// Defaults to "dellfanctl/<node_id>".
+	BaseTopic string `yaml:"base_topic"`
+	// Stable identifier for this machine, used in topic paths, unique_ids,
+	// and the Home Assistant device grouping. Defaults to the hostname.
+	NodeID string `yaml:"node_id"`
+	// Home Assistant discovery prefix (its default is "homeassistant";
+	// only change this if you've customized HA's own mqtt integration).
+	DiscoveryPrefix string `yaml:"discovery_prefix"`
+	QoS             byte   `yaml:"qos"`
+}
+
 // Config is the full on-disk configuration file.
 type Config struct {
 	Version      int       `yaml:"version"`
@@ -206,6 +233,7 @@ type Config struct {
 	Sensors      []Sensor  `yaml:"sensors"`
 	Groups       []Group   `yaml:"groups"`
 	Logging      Logging   `yaml:"logging"`
+	MQTT         MQTT      `yaml:"mqtt"`
 }
 
 // SensorByID returns the sensor with the given ID, or nil.
@@ -229,6 +257,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Dell.Zones) == 0 {
 		return fmt.Errorf("dell.zones must list at least one zone byte (use [\"0xff\"] for all-zone boards)")
+	}
+	if c.MQTT.Enabled && c.MQTT.Broker == "" {
+		return fmt.Errorf("mqtt.enabled is true but mqtt.broker is empty")
 	}
 	if c.Smoothing.EMAAlpha <= 0 || c.Smoothing.EMAAlpha > 1 {
 		return fmt.Errorf("smoothing.ema_alpha must be in (0,1]")

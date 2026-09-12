@@ -19,6 +19,8 @@ import (
 	"dellfanctl/internal/discover"
 	"dellfanctl/internal/ipmi"
 	"dellfanctl/internal/model"
+	"dellfanctl/internal/mqttpub"
+	"dellfanctl/internal/version"
 )
 
 const defaultConfigPath = "/etc/dellfanctl/config.yaml"
@@ -41,7 +43,7 @@ func main() {
 	case "install-service":
 		err = cmdInstallService(os.Args[2:])
 	case "version":
-		fmt.Println("dellfanctl 0.1.0")
+		fmt.Println("dellfanctl " + version.Version)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -160,6 +162,13 @@ func cmdRun(args []string) error {
 	defer stop()
 
 	c := control.New(cfg, log, *dryRun)
+	if cfg.MQTT.Enabled {
+		pub := mqttpub.New(cfg.MQTT, log)
+		if err := pub.Start(); err != nil {
+			return fmt.Errorf("starting mqtt publisher: %w", err)
+		}
+		c.SetMQTT(pub)
+	}
 	return c.Run(ctx, *once)
 }
 

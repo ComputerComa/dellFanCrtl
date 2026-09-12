@@ -39,6 +39,14 @@ func Default() Config {
 			RevertOnExit:         true,
 		},
 		Logging: Logging{Level: "info"},
+		MQTT: MQTT{
+			Enabled:         false,
+			ClientID:        "dellfanctl",
+			BaseTopic:       "", // computed as "dellfanctl/<node_id>" if left empty
+			NodeID:          "", // computed from hostname if left empty
+			DiscoveryPrefix: "homeassistant",
+			QoS:             1,
+		},
 	}
 }
 

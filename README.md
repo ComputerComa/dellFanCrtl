@@ -137,6 +137,46 @@ example. Key things worth understanding:
   pre-fills each IPMI sensor's `crit_c`/`warn_c` from the BMC's own
   upper-critical/upper-non-critical thresholds where available.
 
+## MQTT / Home Assistant
+
+Set `mqtt.enabled: true` in the config (see `config.example.yaml`) to publish
+every sensor and group reading, plus two summary entities, to an MQTT
+broker with Home Assistant MQTT discovery — entities appear automatically
+under one device, no HA-side YAML needed.
+
+- **Non-blocking**: the publisher connects with paho's `ConnectRetry`/
+  `AutoReconnect`, so a broker that's down or slow never delays startup or a
+  tick. Each tick's publish runs in its own goroutine
+  (`internal/control`'s `publishAsync`), so even a slow broker can't stall
+  sensor polling or fan control — the 5s control loop cadence is
+  unaffected either way.
+- **Grouped by type**: individual sensors are published under
+  `sensors/<class>/<id>` (cpu/disk/fan_rpm/inlet/exhaust/board), and each
+  config `groups` entry (e.g. the disk average, the CPU max) gets its own
+  entity under `groups/<name>` — so you see both each drive's temperature
+  and the single averaged value actually driving the fan curve.
+- **Overall summary entities**: `summary/fan_percent` (the current
+  commanded fan speed) and `summary/avg_temp` (the average of every live
+  temperature sensor), plus `summary/mode` (`manual` or `fallback`) and
+  `summary/last_update` (a `device_class: timestamp` entity).
+- **Retained + freshness**: every state is published retained, so Home
+  Assistant has a value immediately on restart. Staleness is covered two
+  ways: an MQTT availability topic (`<base>/status`, backed by a Last Will)
+  flips to `offline` the moment the process dies or is stopped — cleanly on
+  shutdown, or via the broker's own LWT detection if it's killed — so HA
+  greys out the entities instead of showing a frozen number forever; and
+  every sensor/group also carries a `json_attributes_topic` with
+  `last_updated` (plus `stale` for individual sensors) for finer-grained
+  checks.
+- While in fallback (iDRAC automatic control), `summary/fan_percent` is
+  deliberately left unpublished that tick rather than showing a stale
+  manual-mode number, since dellfanctl no longer knows what speed the
+  iDRAC has actually chosen.
+
+Credentials: prefer `mqtt.password_env` (an environment variable name) over
+putting a plaintext password in the config file. Either way, the MQTT
+username should be a broker account scoped to only what this needs.
+
 ## Safety notes
 
 - This tool issues raw IPMI commands that bypass the iDRAC's own thermal
@@ -166,6 +206,8 @@ internal/model/       config file schema, defaults, validation, YAML I/O
 internal/curve/       fan curve interpolation
 internal/discover/    discovery orchestration -> generated config
 internal/control/     the poll/smooth/ramp/fail-safe control loop
+internal/mqttpub/     non-blocking MQTT publisher + Home Assistant discovery
+internal/version/     shared version string
 config.example.yaml   annotated example config
 deploy/               systemd unit template
 ```

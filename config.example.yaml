@@ -120,3 +120,18 @@ groups:
 
 logging:
   level: info
+
+# Optional: publish sensor/fan state to an MQTT broker with Home Assistant
+# discovery. Everything here is non-blocking with respect to the control
+# loop (see README) and off by default.
+mqtt:
+  enabled: false
+  broker: "tcp://mqtt.example.lan:1883"
+  client_id: dellfanctl
+  username: dellfanctl
+  password: ""            # prefer password_env below over a plaintext secret here
+  password_env: ""        # e.g. MQTT_PASSWORD - if set, overrides `password`
+  base_topic: ""           # default: "dellfanctl/<node_id>"
+  node_id: ""              # default: hostname
+  discovery_prefix: homeassistant
+  qos: 1
