@@ -3,4 +3,10 @@
 // wants to report it.
 package version
 
-const Version = "0.1.0"
+// Version defaults to a development marker. Release builds overwrite it at
+// link time via -ldflags, e.g.:
+//
+//	go build -ldflags "-X dellfanctl/internal/version.Version=v1.2.3" ...
+//
+// (see .github/workflows/release.yml, which sets it from the pushed tag).
+var Version = "dev"
