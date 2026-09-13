@@ -1,0 +1,78 @@
+name: Release
+
+# Builds a single static linux/amd64 binary (this is the only platform Dell
+# PowerEdge/iDRAC hardware runs on) plus a matching sha256 checksum file, and
+# publishes both as assets on a GitHub Release. install.sh downloads exactly
+# these two files, so keep their names in sync with that script if you
+# change them here.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v1.2.3)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BINARY_NAME: dellfanctl-linux-amd64
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag '$tag' does not look like a semver tag (vX.Y.Z)" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go vet ./... && go test ./...
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags "-s -w -X dellfanctl/internal/version.Version=${{ steps.tag.outputs.tag }}" \
+            -o "dist/${BINARY_NAME}" \
+            ./cmd/dellfanctl
+
+      - name: Checksum
+        working-directory: dist
+        run: sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+
+      - name: Verify checksum
+        working-directory: dist
+        run: sha256sum -c "${BINARY_NAME}.sha256"
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/${{ env.BINARY_NAME }}
+            dist/${{ env.BINARY_NAME }}.sha256

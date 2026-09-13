@@ -60,6 +60,35 @@ Requires `ipmitool` and (for disk temperatures) `smartctl` on the target
 machine, and typically root (or an ipmitool/smartctl setup that doesn't
 need it) to talk to `/dev/ipmi0` and the storage controller.
 
+## Quick install
+
+Every tagged release (`.github/workflows/release.yml`) publishes a single
+`linux/amd64` binary plus a `.sha256` checksum file as GitHub Release
+assets. `install.sh` downloads the latest release, verifies the binary
+against its checksum before touching anything, installs `ipmitool` and
+`smartmontools`, installs the binary to `/usr/local/bin/dellfanctl`, runs
+`dellfanctl discover` to generate `/etc/dellfanctl/config.yaml`, and writes
+the systemd unit — but does **not** enable or start the service, so you can
+review the generated config and dry-run it first (see [Safety
+notes](#safety-notes)).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ComputerComa/dellFanCrtl/master/install.sh | sudo bash
+```
+
+As with any script piped into a root shell, consider downloading and
+reading it first instead:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/ComputerComa/dellFanCrtl/master/install.sh
+less install.sh
+sudo bash install.sh
+```
+
+Run `sudo bash install.sh --help` for flags (pin a specific `--version`,
+`--skip-packages`, `--skip-discover`, `--enable` to start the service
+immediately instead of waiting for you to review it, etc).
+
 ## Usage
 
 ```sh
@@ -210,4 +239,6 @@ internal/mqttpub/     non-blocking MQTT publisher + Home Assistant discovery
 internal/version/     shared version string
 config.example.yaml   annotated example config
 deploy/               systemd unit template
+install.sh            curl-pipeable installer (see Quick install above)
+.github/workflows/    release workflow (builds + publishes the release binary)
 ```
