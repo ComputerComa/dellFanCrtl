@@ -7,11 +7,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -95,6 +97,7 @@ func cmdDiscover(args []string) error {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath, "path to write the generated config")
 	force := fs.Bool("force", false, "overwrite an existing config file")
+	forceReset := fs.Bool("force-reset", false, "with --force, do NOT preserve curves/mqtt/per-sensor thresholds from the existing config - fully regenerate everything from scratch")
 	skipIPMI := fs.Bool("skip-ipmi", false, "skip IPMI sensor discovery")
 	skipSMART := fs.Bool("skip-smart", false, "skip SMART disk discovery")
 	ipmitoolPath := fs.String("ipmitool", "ipmitool", "path to the ipmitool binary")
@@ -121,6 +124,20 @@ func cmdDiscover(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	merged := false
+	if *force && !*forceReset {
+		if old, loadErr := model.Load(*configPath); loadErr == nil {
+			rep := discover.Merge(old, cfg)
+			printMergeReport(rep)
+			merged = !rep.IsEmpty()
+		} else if !errors.Is(loadErr, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr,
+				"warning: could not read existing config at %s to preserve your curves/mqtt/thresholds from it (%v); writing fresh defaults instead\n",
+				*configPath, loadErr)
+		}
+	}
+
 	if err := os.MkdirAll(dirOf(*configPath), 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
@@ -129,8 +146,38 @@ func cmdDiscover(args []string) error {
 	}
 	fmt.Printf("\nWrote %s with %d sensors and %d groups (%d enabled).\n",
 		*configPath, len(cfg.Sensors), len(cfg.Groups), countEnabled(cfg))
-	fmt.Println("Review it, then test with: dellfanctl run --config", *configPath, "--dry-run")
+	if merged {
+		fmt.Println("Curves/MQTT/thresholds above were kept from your existing config, but the underlying")
+		fmt.Println("sensors may have changed - ALWAYS dry-run before trusting it:")
+	} else {
+		fmt.Println("Review it, then test with:")
+	}
+	fmt.Println("  dellfanctl run --config", *configPath, "--dry-run")
 	return nil
+}
+
+// printMergeReport tells the operator what discover --force actually kept
+// from their existing config (see discover.Merge) instead of silently
+// overwriting it - and, for anything it couldn't safely reconcile itself
+// (a hand-added custom group), exactly what to go double-check.
+func printMergeReport(rep discover.MergeReport) {
+	if rep.IsEmpty() {
+		return
+	}
+	fmt.Println("\nPreserved from the existing config (pass --force-reset to skip this and fully regenerate):")
+	if rep.MQTTPreserved {
+		fmt.Println("  - mqtt settings")
+	}
+	if len(rep.CurvesPreserved) > 0 {
+		fmt.Printf("  - curve/enabled/aggregation for groups: %s\n", strings.Join(rep.CurvesPreserved, ", "))
+	}
+	if rep.SensorOverrides > 0 {
+		fmt.Printf("  - warn_c/crit_c/disabled for %d matched sensor(s)\n", rep.SensorOverrides)
+	}
+	if len(rep.GroupsCarriedOver) > 0 {
+		fmt.Printf("  - custom group(s) discovery doesn't generate, carried over as-is: %s\n", strings.Join(rep.GroupsCarriedOver, ", "))
+		fmt.Println("    double check their sensor_ids still point at sensors that exist in the new config")
+	}
 }
 
 // cmdDiscoverDiff implements 'discover --diff': re-probe hardware and

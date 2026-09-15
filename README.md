@@ -201,11 +201,29 @@ Re-probes hardware and reports drift against the current config — sensors
 it configured but can no longer confirm, and anything new it found that
 isn't monitored yet — without changing anything. Exits `2` if it found
 drift (`0` if clean), so it's cron/monitoring-friendly. After planned
-maintenance (added/removed/rebuilt an array), review what it reports and
-either hand-edit the config for the specific sensors that changed
-(keeps your tuned curves/thresholds), or re-run `discover --force` to
-regenerate everything from scratch (simpler for a full rebuild, but
-discards any hand-tuning — review the new file just like the first time).
+maintenance (added/removed/rebuilt an array), regenerate with:
+
+```sh
+dellfanctl discover --config /etc/dellfanctl/config.yaml --force
+```
+
+`--force` **preserves your customizations** rather than resetting them:
+`mqtt` settings, each group's `curve`/`enabled`/`aggregation` (matched by
+group name), and each sensor's `warn_c`/`crit_c`/`disabled` (matched by
+identity — device/slot or IPMI name, not the sensor's generated `id`,
+which isn't stable across two discovery runs) all carry over from the
+existing file. Only the hardware-derived facts refresh: which sensors
+exist, their `device`/`device_type`/`ipmi_name`, and which sensor IDs
+belong to which group. It prints exactly what it kept. Want the old
+"wipe everything and start over" behavior instead? Add `--force-reset`.
+
+**Always `--dry-run` afterward, even though your curves survived** — the
+*sensors feeding* a preserved curve may have changed (e.g. the `disks`
+group now averages a different set of drives than when you tuned that
+curve), so the same curve can produce different real-world behavior than
+before. A hand-added custom group (one `discover` wouldn't generate
+itself) is carried over as-is without validation — double-check its
+`sensor_ids` still point at sensors that exist in the regenerated file.
 
 ## MQTT / Home Assistant
 

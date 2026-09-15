@@ -248,6 +248,115 @@ func Diff(old, fresh *model.Config) DiffResult {
 	return res
 }
 
+// MergeReport summarizes what Merge carried forward from an existing
+// config into a freshly discovered one.
+type MergeReport struct {
+	MQTTPreserved bool
+	// CurvesPreserved are group names whose curve/enabled/aggregation came
+	// from the old config instead of the freshly generated default.
+	CurvesPreserved []string
+	// GroupsCarriedOver are groups only present in the old config (e.g.
+	// hand-added) that Run's classifier wouldn't have generated at all,
+	// copied over unchanged.
+	GroupsCarriedOver []string
+	// SensorOverrides counts sensors, matched by identity (see
+	// identityKey) rather than ID, whose warn_c/crit_c/disabled were
+	// reapplied from the old config.
+	SensorOverrides int
+}
+
+func (r MergeReport) IsEmpty() bool {
+	return !r.MQTTPreserved && len(r.CurvesPreserved) == 0 && len(r.GroupsCarriedOver) == 0 && r.SensorOverrides == 0
+}
+
+// Merge overlays the settings a human is expected to hand-tune (see
+// config.example.yaml's "review before running" guidance) from old onto
+// fresh, in place, so that re-running discovery to pick up a hardware
+// change (see Diff) doesn't also throw away curves, MQTT settings, or
+// per-sensor thresholds nobody asked to reset:
+//
+//   - MQTT is copied wholesale: discovery never touches it in the first
+//     place, so there's nothing to merge, only to not lose.
+//   - Each known group (matched by Name - "cpu", "disks", etc.) keeps its
+//     old Curve/Enabled/Aggregation; SensorIDs stays whatever Run just
+//     computed, since that must reflect which sensors actually exist now.
+//   - Sensors are matched by identity, not ID (Sensor IDs are
+//     independently slugged per discovery pass and aren't guaranteed to
+//     match up - see identityKey); a matched sensor keeps its old
+//     WarnC/CritC/Disabled. This is safe even for values that merely
+//     happen to equal a past default: IPMI thresholds come from the BMC's
+//     own reporting (unlikely to regress), and SMART disk thresholds are
+//     a flat code default regardless of drive model, so "old value" and
+//     "hand-tuned value" are, in practice, close enough to the same thing
+//     to not bother distinguishing.
+//   - A group present only in old (Run's classifier didn't reconstruct
+//     it - most likely a hand-added custom group) is copied over as-is;
+//     its SensorIDs are NOT revalidated, since they may reference IDs
+//     that no longer exist post-regeneration (report this to the caller
+//     so it can tell the operator to check).
+//
+// Callers should still tell the operator to dry-run and sanity-check the
+// preserved curves afterward: SensorIDs changing under an unchanged curve
+// means the same curve is now fed different real-world values.
+func Merge(old, fresh *model.Config) MergeReport {
+	var rep MergeReport
+
+	// Only worth reporting (and IsEmpty caring about) if old.MQTT actually
+	// held something; copying a zero-value struct over another zero-value
+	// isn't "preserving" anything a human would notice.
+	if old.MQTT != (model.MQTT{}) {
+		rep.MQTTPreserved = true
+	}
+	fresh.MQTT = old.MQTT
+
+	oldGroups := make(map[string]model.Group, len(old.Groups))
+	for _, g := range old.Groups {
+		oldGroups[g.Name] = g
+	}
+	freshGroupNames := make(map[string]bool, len(fresh.Groups))
+	for i := range fresh.Groups {
+		freshGroupNames[fresh.Groups[i].Name] = true
+		og, ok := oldGroups[fresh.Groups[i].Name]
+		if !ok {
+			continue
+		}
+		fresh.Groups[i].Curve = og.Curve
+		fresh.Groups[i].Enabled = og.Enabled
+		fresh.Groups[i].Aggregation = og.Aggregation
+		rep.CurvesPreserved = append(rep.CurvesPreserved, fresh.Groups[i].Name)
+	}
+	for _, g := range old.Groups {
+		if !freshGroupNames[g.Name] {
+			fresh.Groups = append(fresh.Groups, g)
+			rep.GroupsCarriedOver = append(rep.GroupsCarriedOver, g.Name)
+		}
+	}
+
+	oldByKey := make(map[string]model.Sensor, len(old.Sensors))
+	for _, s := range old.Sensors {
+		oldByKey[identityKey(s)] = s
+	}
+	for i := range fresh.Sensors {
+		os, ok := oldByKey[identityKey(fresh.Sensors[i])]
+		if !ok {
+			continue
+		}
+		fresh.Sensors[i].WarnC = os.WarnC
+		fresh.Sensors[i].CritC = os.CritC
+		fresh.Sensors[i].Disabled = os.Disabled
+		rep.SensorOverrides++
+	}
+
+	// Re-derive Required from the group state as it stands now: merging
+	// may just have disabled (or enabled) a group, and Required has to
+	// track that, not the pre-merge snapshot Run() computed it from.
+	markRequired(fresh)
+
+	sort.Strings(rep.CurvesPreserved)
+	sort.Strings(rep.GroupsCarriedOver)
+	return rep
+}
+
 func unitSuffix(unit string) string {
 	if unit == "" {
 		return ""
@@ -332,10 +441,15 @@ func buildGroups(sensors []model.Sensor) []model.Group {
 	return groups
 }
 
-// markRequired flags every sensor referenced by an enabled group, plus all
-// fan-RPM sensors, as required: the control loop trips its safety fallback
-// if a required sensor goes stale, since it can no longer be sure it's
-// making a safe fan-speed decision.
+// markRequired sets every sensor's Required flag to reflect cfg's current
+// groups: true for every sensor referenced by an enabled group, plus all
+// fan-RPM sensors; false for everything else. The control loop trips its
+// safety fallback if a required sensor goes stale, since it can no longer
+// be sure it's making a safe fan-speed decision - so this is a full,
+// idempotent recompute (not just an "add" pass) rather than only ever
+// setting Required=true, since Merge calls this again after changing a
+// group's Enabled flag, and a sensor whose group *just got disabled* must
+// have Required cleared, not left stale from before that change.
 func markRequired(cfg *model.Config) {
 	required := map[string]bool{}
 	for _, g := range cfg.Groups {
@@ -352,8 +466,6 @@ func markRequired(cfg *model.Config) {
 		}
 	}
 	for i := range cfg.Sensors {
-		if required[cfg.Sensors[i].ID] {
-			cfg.Sensors[i].Required = true
-		}
+		cfg.Sensors[i].Required = required[cfg.Sensors[i].ID]
 	}
 }
