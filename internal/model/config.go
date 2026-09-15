@@ -187,6 +187,24 @@ type Safety struct {
 	// true; turning it off is only for advanced setups that manage the
 	// handoff themselves.
 	RevertOnExit bool `yaml:"revert_on_exit"`
+
+	// OnFallbackCmd, if set, is run via `/bin/sh -c` the moment the safety
+	// fallback engages (the fans are about to jump to whatever the iDRAC's
+	// automatic curve decides, with nothing watching drive/CPU temps
+	// against your own thresholds until it clears) - use it to wire in
+	// whatever notification you actually want (ntfy/Pushover/a webhook/
+	// `wall`/...), since MQTT's summary_fallback entity alone is easy to
+	// not notice until the fans already have. It runs asynchronously with
+	// a bounded timeout, in dry-run too (harmless to test); a slow or
+	// failing command is logged but never affects the control loop.
+	// Environment: DELLFANCTL_EVENT=fallback, DELLFANCTL_REASON=<why>,
+	// DELLFANCTL_NODE=<hostname>, DELLFANCTL_TIME=<RFC3339>.
+	OnFallbackCmd string `yaml:"on_fallback_cmd,omitempty"`
+	// OnRecoverCmd, if set, is run the same way once manual control
+	// resumes after a fallback, so you know it's actually over instead of
+	// wondering. Environment: DELLFANCTL_EVENT=recover, plus NODE/TIME as
+	// above (no REASON).
+	OnRecoverCmd string `yaml:"on_recover_cmd,omitempty"`
 }
 
 // Logging controls verbosity of the running daemon.

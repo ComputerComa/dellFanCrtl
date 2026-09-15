@@ -1,0 +1,77 @@
+app_version: v0.1.1
+capabilities:
+  - description: dellfanctl is able to change file ownership arbitrarily
+    name: CHOWN
+  - description: dellfanctl is able to bypass file permission checks
+    name: DAC_OVERRIDE
+  - description: dellfanctl is able to bypass permission checks for file operations
+    name: FOWNER
+  - description: dellfanctl is able to preserve set-user-ID and set-group-ID bits
+    name: FSETID
+  - description: dellfanctl is able to create special files using mknod()
+    name: MKNOD
+  - description: dellfanctl is able to send signals to any process
+    name: KILL
+  - description: >-
+      dellfanctl is able to perform raw I/O operations - needed to send raw
+      IPMI fan commands and read SMART data behind a hardware RAID/HBA
+      controller
+    name: SYS_RAWIO
+  - description: dellfanctl is able to set file capabilities on other files
+    name: SETFCAP
+  - description: dellfanctl is able to change group ID of processes
+    name: SETGID
+  - description: dellfanctl is able to transfer capabilities between processes
+    name: SETPCAP
+  - description: dellfanctl is able to change user ID of processes
+    name: SETUID
+  - description: dellfanctl is able to write records to audit log
+    name: AUDIT_WRITE
+categories:
+  - monitoring
+changelog_url: https://github.com/ComputerComa/dellFanCrtl/releases
+date_added: '2026-09-15'
+description: >-
+  Discovers IPMI/SMART sensors on a Dell PowerEdge server and drives fan
+  speed via a smoothed, curve-based control loop, with an automatic safety
+  fallback back to the iDRAC's own automatic control.
+home: https://github.com/ComputerComa/dellFanCrtl
+host_mounts:
+  - description: >-
+      Full host device access (read-write) - needed to send raw IPMI fan
+      control commands to /dev/ipmi0 and to read SMART data for disks
+      behind a hardware RAID/HBA controller.
+    host_path: /dev
+  - description: >-
+      Read-only access to udev device metadata, used by smartctl to
+      enumerate disks. (Read Only)
+    host_path: /run/udev
+icon: https://raw.githubusercontent.com/ComputerComa/dellFanCrtl/master/deploy/truenas/catalog/icon.svg
+keywords:
+  - dell
+  - idrac
+  - ipmi
+  - fan
+  - cooling
+  - smart
+lib_version: 2.3.4
+lib_version_hash: 2e3a8847308fb2eb0da046018f287c73822c094b5950a10377c3235794ff1242
+maintainers:
+  - email: noreply@github.com
+    name: ComputerComa
+    url: https://github.com/ComputerComa/dellFanCrtl
+name: dellfanctl
+run_as_context:
+  - description: >-
+      Container [dellfanctl] runs as root user and group (needed for raw
+      IPMI/SMART hardware access).
+    gid: 0
+    group_name: Host group is [root]
+    uid: 0
+    user_name: Host user is [root]
+screenshots: []
+sources:
+  - https://github.com/ComputerComa/dellFanCrtl
+title: dellfanctl
+train: community
+version: 1.0.0

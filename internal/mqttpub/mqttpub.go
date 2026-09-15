@@ -53,6 +53,11 @@ type Snapshot struct {
 	AvgTemp       float64
 	HasAvgTemp    bool
 	Mode          string // "manual" or "fallback"
+	Fallback      bool   // mirrors Mode == "fallback", as a proper bool for the binary_sensor below
+	// FallbackReason is why safetyTrip() fired, e.g. "required sensor
+	// \"Disk 9 Temp\" unreadable for 6 ticks". Empty when Fallback is
+	// false.
+	FallbackReason string
 }
 
 type topicPair struct{ state, attrs string }
@@ -259,6 +264,8 @@ type haDiscovery struct {
 	JSONAttributesTopic string   `json:"json_attributes_topic,omitempty"`
 	EntityCategory      string   `json:"entity_category,omitempty"`
 	Icon                string   `json:"icon,omitempty"`
+	PayloadOn           string   `json:"payload_on,omitempty"`
+	PayloadOff          string   `json:"payload_off,omitempty"`
 	Device              haDevice `json:"device"`
 }
 
@@ -272,12 +279,12 @@ func (p *Publisher) device() haDevice {
 	}
 }
 
-func (p *Publisher) discoveryTopic(objectID string) string {
+func (p *Publisher) discoveryTopic(component, objectID string) string {
 	prefix := p.cfg.DiscoveryPrefix
 	if prefix == "" {
 		prefix = "homeassistant"
 	}
-	return fmt.Sprintf("%s/sensor/%s/%s/config", prefix, p.node, objectID)
+	return fmt.Sprintf("%s/%s/%s/%s/config", prefix, component, p.node, objectID)
 }
 
 // PublishDiscovery publishes one retained Home Assistant discovery config
@@ -292,12 +299,12 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 	avail := p.availabilityTopic()
 	var tokens []mqtt.Token
 
-	publish := func(objectID string, d haDiscovery) {
+	publish := func(component, objectID string, d haDiscovery) {
 		d.AvailabilityTopic = avail
 		d.PayloadAvailable = "online"
 		d.PayloadNotAvailable = "offline"
 		d.Device = dev
-		tokens = append(tokens, p.publishRetainedJSON(p.discoveryTopic(objectID), d))
+		tokens = append(tokens, p.publishRetainedJSON(p.discoveryTopic(component, objectID), d))
 	}
 
 	for _, s := range cfg.Sensors {
@@ -308,7 +315,7 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 		stateTopic := fmt.Sprintf("%s/sensors/%s/%s/state", p.base, s.Class, s.ID)
 		attrsTopic := fmt.Sprintf("%s/sensors/%s/%s/attributes", p.base, s.Class, s.ID)
 		sensorTopics[s.ID] = topicPair{state: stateTopic, attrs: attrsTopic}
-		publish(s.ID, haDiscovery{
+		publish("sensor", s.ID, haDiscovery{
 			Name:                s.Name,
 			UniqueID:            p.node + "_" + s.ID,
 			StateTopic:          stateTopic,
@@ -328,7 +335,7 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 		stateTopic := fmt.Sprintf("%s/groups/%s/state", p.base, slug(g.Name))
 		attrsTopic := fmt.Sprintf("%s/groups/%s/attributes", p.base, slug(g.Name))
 		groupTopics[g.Name] = topicPair{state: stateTopic, attrs: attrsTopic}
-		publish(key, haDiscovery{
+		publish("sensor", key, haDiscovery{
 			Name:                fmt.Sprintf("%s Group (%s)", titleCase(g.Name), g.Aggregation),
 			UniqueID:            p.node + "_" + key,
 			StateTopic:          stateTopic,
@@ -339,7 +346,7 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 		})
 	}
 
-	publish("summary_fan_percent", haDiscovery{
+	publish("sensor", "summary_fan_percent", haDiscovery{
 		Name:              "Overall Fan Speed",
 		UniqueID:          p.node + "_summary_fan_percent",
 		StateTopic:        p.base + "/summary/fan_percent/state",
@@ -347,7 +354,7 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 		StateClass:        "measurement",
 		Icon:              "mdi:fan",
 	})
-	publish("summary_avg_temp", haDiscovery{
+	publish("sensor", "summary_avg_temp", haDiscovery{
 		Name:              "Overall Average Temperature",
 		UniqueID:          p.node + "_summary_avg_temp",
 		StateTopic:        p.base + "/summary/avg_temp/state",
@@ -355,14 +362,31 @@ func (p *Publisher) PublishDiscovery(cfg *model.Config) {
 		DeviceClass:       "temperature",
 		StateClass:        "measurement",
 	})
-	publish("summary_mode", haDiscovery{
+	publish("sensor", "summary_mode", haDiscovery{
 		Name:           "Fan Control Mode",
 		UniqueID:       p.node + "_summary_mode",
 		StateTopic:     p.base + "/summary/mode/state",
 		EntityCategory: "diagnostic",
 		Icon:           "mdi:state-machine",
 	})
-	publish("summary_last_update", haDiscovery{
+	// A dedicated problem entity, not just the text summary_mode above:
+	// device_class "problem" is what lets Home Assistant offer a one-click
+	// "notify me" automation ("Device became problem") instead of someone
+	// having to build their own template trigger off summary_mode's raw
+	// "fallback" string - the entire point being that you find out *before*
+	// you notice the fans, not after (see internal/control's
+	// on_fallback_cmd for a non-HA notification path too).
+	publish("binary_sensor", "summary_fallback", haDiscovery{
+		Name:                "Safety Fallback",
+		UniqueID:            p.node + "_summary_fallback",
+		StateTopic:          p.base + "/summary/fallback/state",
+		JSONAttributesTopic: p.base + "/summary/fallback/attributes",
+		DeviceClass:         "problem",
+		PayloadOn:           "ON",
+		PayloadOff:          "OFF",
+		Icon:                "mdi:fan-alert",
+	})
+	publish("sensor", "summary_last_update", haDiscovery{
 		Name:           "Last Update",
 		UniqueID:       p.node + "_summary_last_update",
 		StateTopic:     p.base + "/summary/last_update/state",
@@ -444,6 +468,15 @@ func (p *Publisher) PublishSnapshot(snap Snapshot) {
 	if snap.Mode != "" {
 		tokens = append(tokens, p.publishRetained(p.base+"/summary/mode/state", snap.Mode))
 	}
+	fallbackPayload := "OFF"
+	if snap.Fallback {
+		fallbackPayload = "ON"
+	}
+	tokens = append(tokens, p.publishRetained(p.base+"/summary/fallback/state", fallbackPayload))
+	tokens = append(tokens, p.publishRetainedJSON(p.base+"/summary/fallback/attributes", map[string]interface{}{
+		"last_updated": ts,
+		"reason":       snap.FallbackReason,
+	}))
 	tokens = append(tokens, p.publishRetained(p.base+"/summary/last_update/state", ts))
 
 	waitAll(tokens, 3*time.Second)

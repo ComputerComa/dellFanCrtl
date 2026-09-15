@@ -39,6 +39,15 @@ safety:
   max_consecutive_errors: 5      # consecutive polling failures before falling back
   revert_on_exit: true           # hand control back to iDRAC on shutdown/SIGTERM
 
+  # Optional: run a command the moment the safety fallback engages/clears,
+  # so you find out immediately instead of noticing the fans an hour later.
+  # Runs via `/bin/sh -c`, asynchronously (never blocks a tick), with a
+  # bounded timeout, and even in --dry-run so you can safely test it fires.
+  # Env vars: DELLFANCTL_EVENT=fallback|recover, DELLFANCTL_REASON=<why>
+  # (fallback only), DELLFANCTL_NODE, DELLFANCTL_TIME.
+  # on_fallback_cmd: "curl -s -d \"dellfanctl on $DELLFANCTL_NODE: $DELLFANCTL_REASON\" ntfy.sh/your-topic"
+  # on_recover_cmd:  "curl -s -d \"dellfanctl on $DELLFANCTL_NODE: back to normal\" ntfy.sh/your-topic"
+
 sensors:
   - id: ipmi-cpu1-temp
     name: CPU1 Temp

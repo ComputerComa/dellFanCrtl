@@ -1,0 +1,11 @@
+categories:
+- monitoring
+icon_url: https://raw.githubusercontent.com/ComputerComa/dellFanCrtl/master/deploy/truenas/catalog/icon.svg
+screenshots: []
+tags:
+- dell
+- idrac
+- ipmi
+- fan
+- cooling
+- smart

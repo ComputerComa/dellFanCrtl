@@ -1,0 +1,8 @@
+images:
+  image:
+    repository: ghcr.io/computercoma/dellfanctl
+    tag: v0.1.1
+
+consts:
+  dellfanctl_container_name: dellfanctl
+  config_dir: /etc/dellfanctl

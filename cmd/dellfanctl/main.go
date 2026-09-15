@@ -99,18 +99,25 @@ func cmdDiscover(args []string) error {
 	skipSMART := fs.Bool("skip-smart", false, "skip SMART disk discovery")
 	ipmitoolPath := fs.String("ipmitool", "ipmitool", "path to the ipmitool binary")
 	smartctlPath := fs.String("smartctl", "smartctl", "path to the smartctl binary")
+	diff := fs.Bool("diff", false, "report drift against the existing config instead of writing one (exit 2 if any found)")
 	fs.Parse(args)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	cfg, err := discover.Run(ctx, discover.Options{
+	opts := discover.Options{
 		IpmitoolPath: *ipmitoolPath,
 		SmartctlPath: *smartctlPath,
 		SkipIPMI:     *skipIPMI,
 		SkipSMART:    *skipSMART,
 		Logf:         func(f string, a ...interface{}) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
-	})
+	}
+
+	if *diff {
+		return cmdDiscoverDiff(ctx, *configPath, opts)
+	}
+
+	cfg, err := discover.Run(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -124,6 +131,63 @@ func cmdDiscover(args []string) error {
 		*configPath, len(cfg.Sensors), len(cfg.Groups), countEnabled(cfg))
 	fmt.Println("Review it, then test with: dellfanctl run --config", *configPath, "--dry-run")
 	return nil
+}
+
+// cmdDiscoverDiff implements 'discover --diff': re-probe hardware and
+// report drift against the already-reviewed config at configPath, without
+// touching it. Lets an operator see "your drives changed" as a deliberate
+// check (e.g. before/after planned maintenance, or from cron) instead of
+// finding out only once a required sensor has already gone stale long
+// enough to trip the safety fallback.
+func cmdDiscoverDiff(ctx context.Context, configPath string, opts discover.Options) error {
+	old, err := model.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading existing config (nothing to diff against): %w", err)
+	}
+	fresh, err := discover.Run(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	res := discover.Diff(old, fresh)
+	if !res.HasChanges() {
+		fmt.Println("\nNo drift: every currently configured sensor is still readable, and the probe found nothing new.")
+		return nil
+	}
+
+	fmt.Println()
+	if len(res.Missing) > 0 {
+		fmt.Println("MISSING - configured, but this probe couldn't confirm them:")
+		for _, s := range res.Missing {
+			fmt.Printf("  - %-16s %-30s %s\n", s.ID, s.Name, sensorAddr(s))
+			if s.Required {
+				fmt.Println("      REQUIRED: going/staying stale trips the safety fallback to iDRAC automatic control.")
+			}
+		}
+		fmt.Println()
+	}
+	if len(res.New) > 0 {
+		fmt.Println("NEW - found by this probe, not in the current config (not monitored, doesn't affect the fan curve):")
+		for _, s := range res.New {
+			fmt.Printf("  - %-30s class=%-6s %s\n", s.Name, s.Class, sensorAddr(s))
+		}
+		fmt.Println()
+	}
+	fmt.Println("To pick these up: hand-edit", configPath, "(keeps your tuned curves/thresholds - safest",
+		"for a like-for-like drive swap, which often needs no change at all), or re-run")
+	fmt.Println("  dellfanctl discover --config", configPath, "--force")
+	fmt.Println("to fully regenerate it (this REPLACES the whole file, including any curves/thresholds")
+	fmt.Println("you've hand-tuned since - review the new file just like the first time).")
+
+	os.Exit(2) // distinct from the generic os.Exit(1) on error, so e.g. a cron job can tell "drift found" from "probe failed"
+	return nil
+}
+
+func sensorAddr(s model.Sensor) string {
+	if s.Source == model.SourceSMART {
+		return fmt.Sprintf("device=%s device_type=%s", s.Device, s.DeviceType)
+	}
+	return fmt.Sprintf("ipmi_name=%q occurrence=%d", s.IPMIName, s.Occurrence)
 }
 
 func countEnabled(cfg *model.Config) int {

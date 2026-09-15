@@ -1,3 +1,5 @@
 /dellfanctl
 /bin/
 *.test
+__pycache__/
+*.pyc
