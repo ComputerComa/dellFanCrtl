@@ -1,0 +1,29 @@
+# Example TrueNAS SCALE "Custom App" definition for dellfanctl.
+#
+# Paste this into Apps -> Discover Apps -> Custom App -> Install via YAML
+# (the exact menu wording varies a bit by SCALE version), after editing the
+# volume path below to point at a dataset you created for this. See
+# deploy/truenas/README.md for the full walkthrough (creating the dataset,
+# running discovery, reviewing the config) before deploying this.
+#
+# Why root/privileged at all: dellfanctl issues raw ipmitool commands
+# straight to the BMC (/dev/ipmi0) and reads smartctl through the storage
+# controller, which on most hardware means either --privileged or, once
+# you've confirmed exactly which device nodes and capabilities your board
+# needs, a narrower `devices:`/`cap_add:` grant instead. Start privileged
+# to get it working, then tighten if you want to.
+services:
+  dellfanctl:
+    image: ghcr.io/computercoma/dellfanctl:latest
+    container_name: dellfanctl
+    restart: unless-stopped
+    privileged: true
+    # SIGTERM triggers a graceful shutdown that hands fan control back to
+    # the iDRAC before exiting (same as the systemd unit's
+    # TimeoutStopSec=15) - give it room instead of Docker's default 10s.
+    stop_grace_period: 15s
+    volumes:
+      # EDIT THIS: a dataset dedicated to dellfanctl's config, so it
+      # survives container/image updates and TrueNAS upgrades alike.
+      - /mnt/YOUR_POOL/apps/dellfanctl/config:/etc/dellfanctl
+    command: ["run", "--config", "/etc/dellfanctl/config.yaml"]

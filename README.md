@@ -89,6 +89,13 @@ Run `sudo bash install.sh --help` for flags (pin a specific `--version`,
 `--skip-packages`, `--skip-discover`, `--enable` to start the service
 immediately instead of waiting for you to review it, etc).
 
+`install.sh` assumes a regular Linux host with a writable `/`, a package
+manager, and systemd — that doesn't describe every NAS OS. **On TrueNAS
+SCALE, use the container image instead** (its root filesystem is replaced
+on every update, so a plain binary + systemd unit installed by the script
+above wouldn't survive one) — see
+[`deploy/truenas/README.md`](deploy/truenas/README.md).
+
 ## Usage
 
 ```sh
@@ -239,6 +246,20 @@ internal/mqttpub/     non-blocking MQTT publisher + Home Assistant discovery
 internal/version/     shared version string
 config.example.yaml   annotated example config
 deploy/               systemd unit template
+deploy/truenas/       TrueNAS SCALE container deployment (see below)
 install.sh            curl-pipeable installer (see Quick install above)
-.github/workflows/    release workflow (builds + publishes the release binary)
+Dockerfile            container image (used by deploy/truenas/, GHCR release)
+.github/workflows/    release workflow (builds + publishes the binary and image)
 ```
+
+## TrueNAS SCALE / Docker
+
+`ghcr.io/computercoma/dellfanctl` is published alongside every tagged
+release, built from the [`Dockerfile`](Dockerfile) in this repo (same
+binary, `ipmitool` + `smartmontools` baked in). This is the recommended
+way to run dellfanctl on TrueNAS SCALE or any other host where you'd
+rather not install a binary/systemd unit directly onto the OS — see
+[`deploy/truenas/README.md`](deploy/truenas/README.md) for the full
+walkthrough (create a dataset, run discovery, review the config, deploy
+as a Custom App) and [`deploy/truenas/docker-compose.yaml`](deploy/truenas/docker-compose.yaml)
+for a ready-to-edit Custom App definition.
