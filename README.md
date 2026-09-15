@@ -260,6 +260,9 @@ binary, `ipmitool` + `smartmontools` baked in). This is the recommended
 way to run dellfanctl on TrueNAS SCALE or any other host where you'd
 rather not install a binary/systemd unit directly onto the OS — see
 [`deploy/truenas/README.md`](deploy/truenas/README.md) for the full
-walkthrough (create a dataset, run discovery, review the config, deploy
-as a Custom App) and [`deploy/truenas/docker-compose.yaml`](deploy/truenas/docker-compose.yaml)
-for a ready-to-edit Custom App definition.
+walkthrough (create a dataset, run discovery, review the config, then
+deploy either as a [Custom
+App](deploy/truenas/docker-compose.yaml) via pasted YAML, or as a
+[catalog app](deploy/truenas/catalog/README.md) with a generated settings
+form like any built-in SCALE app — see that page for how proven each path
+is).

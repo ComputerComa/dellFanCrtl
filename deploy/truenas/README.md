@@ -59,16 +59,27 @@ docker run --rm --privileged \
 
 ## 4. Deploy as a persistent app
 
-Once you're happy with the config: **Apps** → **Discover Apps** →
-**Custom App** (labelled "Install via YAML" on some SCALE versions) and
-paste in [`docker-compose.yaml`](docker-compose.yaml) from this
-directory, editing the volume path to match your dataset. Start it.
+Once you're happy with the config, there are two ways to actually deploy
+it - pick one:
 
-`restart: unless-stopped` plays the role systemd's `Restart=on-failure`
-normally would; `stop_grace_period: 15s` gives it the same room the
-systemd unit gets (`TimeoutStopSec=15`) to hand fan control back to the
-iDRAC on shutdown/restart. Logs are visible from the app's **Logs** tab
-in the Apps UI, or `docker logs dellfanctl`.
+- **Custom App (proven, works today):** **Apps** → **Discover Apps** →
+  **Custom App** (labelled "Install via YAML" on some SCALE versions) and
+  paste in [`docker-compose.yaml`](docker-compose.yaml) from this
+  directory, editing the volume path to match your dataset. Start it.
+- **Catalog app (a generated settings form, like any built-in app):** add
+  this repo as a custom catalog and install "dellfanctl" from Discover
+  Apps instead of pasting YAML - see
+  [`catalog/README.md`](catalog/README.md) for how to add it and an
+  important caveat: it's built to mirror real, working TrueNAS apps and
+  its template has been rendered against TrueNAS's own library locally,
+  but hasn't been through an actual TrueNAS catalog sync yet. If it
+  doesn't work, the Custom App above is the fallback.
+
+Either way, `restart: unless-stopped` plays the role systemd's
+`Restart=on-failure` normally would; `stop_grace_period: 15s` gives it
+the same room the systemd unit gets (`TimeoutStopSec=15`) to hand fan
+control back to the iDRAC on shutdown/restart. Logs are visible from the
+app's **Logs** tab in the Apps UI, or `docker logs dellfanctl`.
 
 ## Updating
 

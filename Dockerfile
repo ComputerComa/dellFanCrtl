@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ipmitool \
       smartmontools \
       ca-certificates \
+      procps \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/dellfanctl /usr/local/bin/dellfanctl
 
