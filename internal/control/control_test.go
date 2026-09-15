@@ -1,6 +1,9 @@
 package control
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"dellfanctl/internal/model"
@@ -146,5 +149,53 @@ func TestEMASmoothsSpike(t *testing.T) {
 	}
 	if st.ema > 60 {
 		t.Errorf("expected EMA to still be well below the spike value, got %v", st.ema)
+	}
+}
+
+func TestRunHookAsyncSetsEnvAndRuns(t *testing.T) {
+	c := New(testConfig(), nil, true)
+	out := filepath.Join(t.TempDir(), "hook-out")
+	cmdline := `printf '%s %s' "$DELLFANCTL_EVENT" "$DELLFANCTL_REASON" > ` + out
+
+	c.runHookAsync("fallback", cmdline, "sensor X unreadable")
+	c.hookWG.Wait()
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("hook did not run (no output file): %v", err)
+	}
+	if want := "fallback sensor X unreadable"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRunHookAsyncEmptyCommandIsNoop(t *testing.T) {
+	c := New(testConfig(), nil, true)
+	// Must return without adding to hookWG at all - Wait() here proves it
+	// didn't spawn anything to wait for.
+	c.runHookAsync("fallback", "", "reason")
+	c.hookWG.Wait()
+}
+
+func TestRunHookAsyncFailureDoesNotPanicOrBlock(t *testing.T) {
+	c := New(testConfig(), nil, true)
+	c.runHookAsync("fallback", "exit 1", "reason")
+	c.hookWG.Wait() // must return promptly even though the command failed
+}
+
+func TestRunHookAsyncOmitsReasonOnRecover(t *testing.T) {
+	c := New(testConfig(), nil, true)
+	out := filepath.Join(t.TempDir(), "hook-out")
+	cmdline := `env | grep -c DELLFANCTL_REASON > ` + out + ` || true`
+
+	c.runHookAsync("recover", cmdline, "")
+	c.hookWG.Wait()
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("hook did not run: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "0" {
+		t.Errorf("expected DELLFANCTL_REASON to be unset when reason is empty, env had %s matches", strings.TrimSpace(string(got)))
 	}
 }

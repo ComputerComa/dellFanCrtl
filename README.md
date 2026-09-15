@@ -173,6 +173,40 @@ example. Key things worth understanding:
   pre-fills each IPMI sensor's `crit_c`/`warn_c` from the BMC's own
   upper-critical/upper-non-critical thresholds where available.
 
+### Hardware changes (drive swaps, new disks)
+
+Disk sensors are matched by controller slot (`device` + `device_type`,
+e.g. `megaraid,3`), not serial number — so **replacing a drive in the same
+bay needs no config change at all**: the sensor just starts reading
+whatever's physically in that slot now. This is deliberate and matches
+how the tool is meant to be operated: config is reviewed once, by a human,
+and stays static until you deliberately change it — an unreviewed change
+to what drives the fan curve (a new drive silently added with
+auto-guessed thresholds, or a vanished one silently dropped from an
+average) is exactly the kind of surprise this tool exists to avoid, not
+introduce. If a `required` drive sensor *can't* be read at all (removed,
+failed, or — the case that actually prompted this section — an entire
+array rebuilt onto new hardware), that's treated like any other required
+sensor going stale: the safety fallback engages (see below), which is the
+correct response to "I can no longer verify this is safe," not a bug.
+
+To find out about drive changes on your own terms instead of via the fans
+spinning up:
+
+```sh
+dellfanctl discover --config /etc/dellfanctl/config.yaml --diff
+```
+
+Re-probes hardware and reports drift against the current config — sensors
+it configured but can no longer confirm, and anything new it found that
+isn't monitored yet — without changing anything. Exits `2` if it found
+drift (`0` if clean), so it's cron/monitoring-friendly. After planned
+maintenance (added/removed/rebuilt an array), review what it reports and
+either hand-edit the config for the specific sensors that changed
+(keeps your tuned curves/thresholds), or re-run `discover --force` to
+regenerate everything from scratch (simpler for a full rebuild, but
+discards any hand-tuning — review the new file just like the first time).
+
 ## MQTT / Home Assistant
 
 Set `mqtt.enabled: true` in the config (see `config.example.yaml`) to publish
@@ -195,6 +229,16 @@ under one device, no HA-side YAML needed.
   commanded fan speed) and `summary/avg_temp` (the average of every live
   temperature sensor), plus `summary/mode` (`manual` or `fallback`) and
   `summary/last_update` (a `device_class: timestamp` entity).
+- **`summary/fallback`** is a dedicated `binary_sensor` with
+  `device_class: problem` (not just text buried in `summary/mode`), so
+  Home Assistant offers a one-click "notify me" automation
+  ("Device became problem") instead of everyone having to hand-build a
+  template trigger — the whole point being you find out *before* you
+  notice the fans, not after. Its `json_attributes_topic` carries `reason`
+  (why `safetyTrip()` fired, e.g. which sensor went stale). For a non-HA
+  notification path (or as well as), see `safety.on_fallback_cmd` /
+  `on_recover_cmd` in `config.example.yaml` — runs any command/webhook you
+  want the moment fallback engages or clears.
 - **Retained + freshness**: every state is published retained, so Home
   Assistant has a value immediately on restart. Staleness is covered two
   ways: an MQTT availability topic (`<base>/status`, backed by a Last Will)
@@ -229,6 +273,13 @@ username should be a broker account scoped to only what this needs.
   its critical threshold, a fan reporting suspiciously low RPM, or
   sustained polling failures. It does **not** replace physically checking
   on a new deployment for the first while.
+- **The fallback is silent unless you wire up something to notice it.**
+  100% fan noise at 9pm because a required sensor went stale is the
+  fallback working correctly, not a malfunction — but finding out an hour
+  later because the fans were loud isn't good enough. Set
+  `safety.on_fallback_cmd` (any command/webhook — ntfy, Pushover, `wall`,
+  whatever) and/or watch the MQTT `summary/fallback` problem entity — see
+  MQTT / Home Assistant above.
 
 ## Repository layout
 

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -17,6 +19,10 @@ import (
 	"dellfanctl/internal/mqttpub"
 	"dellfanctl/internal/smart"
 )
+
+// hookTimeout bounds an on_fallback_cmd/on_recover_cmd invocation, matching
+// execx's default for external commands elsewhere in this codebase.
+const hookTimeout = 10 * time.Second
 
 // sensorState tracks the smoothing/staleness state for one configured
 // sensor across ticks.
@@ -39,10 +45,13 @@ type Controller struct {
 	states map[string]*sensorState
 
 	fallbackActive bool
+	fallbackReason string
 	goodTicks      int
 	commandedPct   float64 // -1 == unknown/unset
 	belowHold      int
 	consecutiveErr int
+
+	hookWG sync.WaitGroup
 }
 
 // New builds a Controller for cfg. log may be nil to use slog's default
@@ -98,6 +107,10 @@ func (c *Controller) Run(ctx context.Context, once bool) error {
 			c.mqttPub.Close()
 		}()
 	}
+	// Similarly, don't let the process exit out from under a still-running
+	// on_fallback_cmd/on_recover_cmd (each is itself bounded by
+	// hookTimeout, so this can't hang shutdown).
+	defer c.hookWG.Wait()
 
 	if once {
 		c.tick(ctx)
@@ -375,7 +388,7 @@ func (c *Controller) fanPctForPublish() (float64, bool) {
 // call synchronously from tick() before handing the result to a goroutine
 // for the actual (network) publish.
 func (c *Controller) buildSnapshot() mqttpub.Snapshot {
-	snap := mqttpub.Snapshot{Time: time.Now(), Mode: c.modeString()}
+	snap := mqttpub.Snapshot{Time: time.Now(), Mode: c.modeString(), Fallback: c.fallbackActive, FallbackReason: c.fallbackReason}
 	if pct, ok := c.fanPctForPublish(); ok {
 		snap.FanPercent, snap.HasFanPercent = pct, true
 	}
@@ -429,6 +442,45 @@ func (c *Controller) publishAsync() {
 	}()
 }
 
+// runHookAsync fires cmdline (via `/bin/sh -c`) in its own goroutine, never
+// blocking the caller (the tick that just decided to engage/clear the
+// safety fallback) regardless of how slow or broken the command is.
+// Deliberately runs in dry-run too: a notification hook has no effect on
+// hardware, and dry-run is exactly when someone would want to safely test
+// it fires correctly.
+func (c *Controller) runHookAsync(event, cmdline, reason string) {
+	if cmdline == "" {
+		return
+	}
+	node, _ := os.Hostname()
+	if node == "" {
+		node = "dellfanctl"
+	}
+	env := append(os.Environ(),
+		"DELLFANCTL_EVENT="+event,
+		"DELLFANCTL_NODE="+node,
+		"DELLFANCTL_TIME="+time.Now().Format(time.RFC3339),
+	)
+	if reason != "" {
+		env = append(env, "DELLFANCTL_REASON="+reason)
+	}
+
+	c.hookWG.Add(1)
+	go func() {
+		defer c.hookWG.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			c.log.Warn("notification hook failed", "event", event, "error", err, "output", string(out))
+			return
+		}
+		c.log.Info("notification hook ran", "event", event)
+	}()
+}
+
 func clamp(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
@@ -457,8 +509,10 @@ func (c *Controller) tick(ctx context.Context) {
 				c.log.Info("[dry-run] would return fan control to iDRAC")
 			}
 			c.fallbackActive = true
+			c.fallbackReason = reason
 			c.commandedPct = -1
 			c.goodTicks = 0
+			c.runHookAsync("fallback", c.cfg.Safety.OnFallbackCmd, reason)
 		}
 		return
 	}
@@ -480,6 +534,8 @@ func (c *Controller) tick(ctx context.Context) {
 				c.fallbackActive = false
 				c.goodTicks = 0
 				c.belowHold = 0
+				c.runHookAsync("recover", c.cfg.Safety.OnRecoverCmd, "")
+				c.fallbackReason = ""
 			}
 		} else {
 			c.goodTicks = 0

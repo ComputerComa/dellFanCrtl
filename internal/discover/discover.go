@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"dellfanctl/internal/classify"
@@ -181,6 +182,70 @@ func Run(ctx context.Context, opts Options) (*model.Config, error) {
 		return nil, fmt.Errorf("no sensors discovered (ipmitool/smartctl unavailable or produced no usable data)")
 	}
 	return &cfg, nil
+}
+
+// DiffResult summarizes drift between a previously generated config's
+// sensors and what a fresh probe (Run) finds right now. It's purely a
+// report: computing it never touches hardware beyond what Run itself does
+// (read-only), and never modifies the old config.
+type DiffResult struct {
+	// Missing are sensors present in the old config that the fresh probe
+	// couldn't confirm - the case that matters most, since a Required one
+	// going stale is what trips the safety fallback (see internal/control).
+	Missing []model.Sensor
+	// New are sensors the fresh probe found with no corresponding entry in
+	// the old config - added capacity, not yet reviewed or monitored.
+	New []model.Sensor
+}
+
+// HasChanges reports whether Diff found any drift at all.
+func (r DiffResult) HasChanges() bool {
+	return len(r.Missing) > 0 || len(r.New) > 0
+}
+
+// identityKey is what a sensor is matched on across two probes: for SMART,
+// its device+device_type (the physical controller slot address, which is
+// what stays stable across a same-slot drive swap - see the SMART-specific
+// fields' doc comment in internal/model); for IPMI, its name+occurrence.
+// Deliberately not Sensor.ID, which is independently slugged per run and
+// isn't guaranteed to match across two separate discovery passes.
+func identityKey(s model.Sensor) string {
+	switch s.Source {
+	case model.SourceSMART:
+		return "smart:" + s.Device + ":" + s.DeviceType
+	case model.SourceIPMI:
+		return fmt.Sprintf("ipmi:%s:%d", s.IPMIName, s.Occurrence)
+	default:
+		return "other:" + s.ID
+	}
+}
+
+// Diff compares an existing config's sensors against a freshly discovered
+// probe (typically the result of calling Run again with the same Options).
+func Diff(old, fresh *model.Config) DiffResult {
+	oldByKey := make(map[string]model.Sensor, len(old.Sensors))
+	for _, s := range old.Sensors {
+		oldByKey[identityKey(s)] = s
+	}
+	freshByKey := make(map[string]model.Sensor, len(fresh.Sensors))
+	for _, s := range fresh.Sensors {
+		freshByKey[identityKey(s)] = s
+	}
+
+	var res DiffResult
+	for k, s := range oldByKey {
+		if _, ok := freshByKey[k]; !ok {
+			res.Missing = append(res.Missing, s)
+		}
+	}
+	for k, s := range freshByKey {
+		if _, ok := oldByKey[k]; !ok {
+			res.New = append(res.New, s)
+		}
+	}
+	sort.Slice(res.Missing, func(i, j int) bool { return res.Missing[i].ID < res.Missing[j].ID })
+	sort.Slice(res.New, func(i, j int) bool { return res.New[i].ID < res.New[j].ID })
+	return res
 }
 
 func unitSuffix(unit string) string {
